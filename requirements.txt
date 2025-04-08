@@ -1,0 +1,6 @@
+DuckDuckGoSearchRun
+ollama
+duckduckgo-search
+langchain
+langchain-community
+flask
