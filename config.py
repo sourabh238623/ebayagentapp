@@ -1,8 +1,8 @@
 # ebay_agent_app/config.py
 import os
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL",
-                                 "https://2648-73-239-232-174.ngrok-free.app")
+OLLAMA_BASE_URL = os.environ.get(
+    "OLLAMA_BASE_URL", "https://9759-216-113-160-105.ngrok-free.app")
 LLM_MODEL = os.environ.get("LLM_MODEL", "mistral")
 
 USER_DATA = {
