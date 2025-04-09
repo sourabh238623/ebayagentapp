@@ -1,4 +1,3 @@
-DuckDuckGoSearchRun
 ollama
 duckduckgo-search
 langchain
