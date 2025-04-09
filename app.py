@@ -174,7 +174,7 @@ def ask_agent():
                     auth_state["authenticated"] = True
                     return jsonify({
                         "response":
-                        "Authentication successful. Ask your eBay question.",
+                        "Thanks for being an ebay customer, Please let me know how can i help you.",
                         "authenticated": True,
                         "agent": "Authentication Agent"
                     })
