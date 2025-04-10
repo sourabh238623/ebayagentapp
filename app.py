@@ -73,13 +73,27 @@ app = Flask(__name__)
 user_auth_state = {}  # In-memory state for tracking authentication attempts
 
 
-def extract_phone_number(text):
-    match = re.search(r'\b\d{10}\b', text)
+def extract_phone_number(text, auth_state):
+    if "phone_no_match_count" not in auth_state:
+        auth_state["phone_no_match_count"] = 0
+    
+    match = re.search(r'\b\d{10}\b', text)    
+    if not match:
+        auth_state["phone_no_match_count"]  += 1
+        if auth_state["phone_no_match_count"] >= 3:
+            return False
     return match.group(0) if match else None
 
 
-def extract_zip_code(text):
+def extract_zip_code(text, auth_state):
+    if "zip_no_match_count" not in auth_state:
+        auth_state["zip_no_match_count"] = 0
     match = re.search(r'\b\d{5}\b', text)
+    if not match:
+        auth_state["zip_no_match_count"]  += 1
+        if auth_state["zip_no_match_count"] >= 3:
+            print("Zip code not valid after multiple attempts:::::")
+            return False
     return match.group(0) if match else None
 
 
@@ -174,7 +188,7 @@ def ask_agent():
         elif auth_state["awaiting"] == "zip":
             if negative_response_patterns.search(query):
                 return handle_authentication_failure(session_id)
-            zip_code = extract_zip_code(query)
+            zip_code = extract_zip_code(query, auth_state)
             if zip_code:
                 auth_state["zip"] = zip_code
                 auth_state["awaiting"] = None
@@ -190,20 +204,47 @@ def ask_agent():
                         "authenticated": True,
                         "agent": "Authentication Agent"
                     })
+                elif auth_state.get("zip_no_match_count") >= 2:
+                    # If the zip code is not valid and we have already failed twice
+                    logging.debug(
+                        f"Session {session_id}: Zip code not valid after multiple attempts."
+                    )
+                    return jsonify({
+                        "response":
+                        "I couldn't able to valid your zip code. Let me know how may I help you.",
+                        "authenticated": False,
+                        "agent": "eBay Guest Agent (Initial)",
+                        "needs": "xfer"
+                    })
                 else:
                     return handle_authentication_failure(session_id)
+            elif auth_state.get("zip_no_match_count") >= 2:
+                # If the zip code is not valid and we have already failed twice
+                logging.debug(
+                    f"Session {session_id}: Zip code not valid after multiple attempts."
+                )
+                return jsonify({
+                    "response":
+                    "I couldn't able to valid your zip code. Let me know how may I help you.",
+                    "authenticated": False,
+                    "agent": "eBay Guest Agent",
+                    "needs": "xfer"
+                })
             else:
                 return jsonify({
                     "response":
-                    "That doesn't look like a valid zip code. Please provide it.",
+                    "That doesn't look like a valid zip code. Please enter your zipcode again.",
                     "authenticated": False,
                     "agent": "Authentication Agent",
                     "needs": "zip"
                 })
         else:
             # Start of a new session (or if not already awaiting info)
-            phone = extract_phone_number(query)
-            zip_code = extract_zip_code(query)
+            failed_attempts = 0
+            phone = extract_phone_number(query, auth_state)
+            zip_code = False
+            if phone:
+                zip_code = extract_zip_code(query, auth_state)
 
             if phone and zip_code:
                 auth_state["started"] = True
@@ -249,6 +290,30 @@ def ask_agent():
                     "authenticated": False,
                     "agent": "Authentication Agent",
                     "needs": "phone"
+                })
+            elif auth_state.get("phone_no_match_count") >= 3:
+                # If the phone number is not valid and we have already failed twice
+                logging.debug(
+                    f"Session {session_id}: Phone number not valid after multiple attempts."
+                )
+                return jsonify({
+                    "response":
+                    "I couldn't able to valid your phone number. Let me know how may I help you.",
+                    "authenticated": False,
+                    "agent": "eBay Guest Agent",
+                    "needs": "xfer"
+                })
+            elif auth_state.get("zip_no_match_count")!=None and auth_state.get("zip_no_match_count") >= 3:
+                # If the zip code is not valid and we have already failed twice
+                logging.debug(
+                    f"Session {session_id}: Zip code not valid after multiple attempts."
+                )
+                return jsonify({
+                    "response":
+                    "There seems to be some issue with your account. Please let me know how may I help you.",
+                    "authenticated": False,
+                    "agent": "eBay Guest Agent (Initial)",
+                    "needs": "xfer"
                 })
             elif not auth_state["started"]:
                 # First interaction in a new session, not phone or zip
