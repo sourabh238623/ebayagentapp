@@ -10,7 +10,7 @@ import json
 logging.basicConfig(level=logging.DEBUG)
 
 OLLAMA_BASE_URL = os.environ.get(
-    "OLLAMA_BASE_URL", "https://1ce3-216-113-160-105.ngrok-free.app")
+    "OLLAMA_BASE_URL", "https://0ba6-216-113-160-105.ngrok-free.app")
 LLM_MODEL = os.environ.get("LLM_MODEL", "mistral")
 llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=LLM_MODEL)
 
@@ -21,7 +21,7 @@ USER_DATA = {
     "9876543210-12345": {
         "authenticated": True
     },
-    "8473236970-12345": {
+    "8473236970-98012": {
         "authenticated": True
     }
 }
@@ -76,7 +76,12 @@ user_auth_state = {}
 
 
 def extract_phone_number(text):
-    match = re.search(r'\b\d{10}\b', text)
+    # Remove all non-digit characters
+    digits = re.sub(r'\D', '', text)
+
+    # Ensure we have exactly 10 digits (standard phone number length)
+    match = re.fullmatch(r'\d{10}', digits)
+
     return match.group(0) if match else None
 
 
@@ -134,7 +139,8 @@ def ask_agent():
             if negative_response_patterns.search(query):
                 auth_state["awaiting"] = None
                 return jsonify({
-                    "response": "Authentication failed.",
+                    "response":
+                    "No, Problem, Please tell me how can i help you. you can ask me any ebay related queries",
                     "authenticated": False,
                     "agent": "Authentication Agent"
                 })
@@ -151,7 +157,7 @@ def ask_agent():
             else:
                 return jsonify({
                     "response":
-                    "That doesn't look like a phone number. Please provide it.",
+                    "That doesn't look like a phone number. Could you please provide me your phone number?",
                     "authenticated": False,
                     "agent": "Authentication Agent",
                     "needs": "phone"
@@ -160,7 +166,8 @@ def ask_agent():
             if negative_response_patterns.search(query):
                 auth_state["awaiting"] = None
                 return jsonify({
-                    "response": "Authentication failed.",
+                    "response":
+                    "No, Problem, Please tell me how can i help you. you can ask me any ebay related queries.",
                     "authenticated": False,
                     "agent": "Authentication Agent"
                 })
