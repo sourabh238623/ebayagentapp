@@ -90,6 +90,10 @@ app = Flask(__name__)
 user_auth_state = {}
 user_chat_history = {}
 
+@app.route('/')
+def health_check():
+    return jsonify({"status": "healthy"})
+
 
 def extract_phone_number(text, auth_state):
     auth_state.setdefault("phone_no_match_count", 0)
@@ -233,3 +237,12 @@ def ask_agent():
     except Exception as e:
         logging.error(f"Session {session_id}: Agent Error: {e}")
         return jsonify({"error": f"Agent Error: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    import atexit
+    
+    @atexit.register
+    def shutdown():
+        logging.info("Shutting down the application")
+    
+    app.run(host='0.0.0.0', port=5000, debug=False)
