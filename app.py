@@ -90,6 +90,10 @@ app = Flask(__name__)
 user_auth_state = {}
 user_chat_history = {}
 
+@app.route('/')
+def root():
+    return 'eBay Assistant is running!', 200
+
 
 def extract_phone_number(text, auth_state):
     if "phone_no_match_count" not in auth_state:
@@ -183,3 +187,6 @@ def ask_agent():
     except Exception as e:
         logging.error(f"Session {session_id}: Agent Error: {e}")
         return jsonify({"error": f"Agent Error: {str(e)}"}), 500
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
