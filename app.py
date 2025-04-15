@@ -90,25 +90,19 @@ app = Flask(__name__)
 user_auth_state = {}
 user_chat_history = {}
 
-@app.route('/')
-def root():
-    return 'eBay Assistant is running!', 200
-
 
 def extract_phone_number(text, auth_state):
-    if "phone_no_match_count" not in auth_state:
-        auth_state["phone_no_match_count"] = 0
+    auth_state.setdefault("phone_no_match_count", 0)
     match = re.search(r'\b(?:\d[\s.-]?){9}\d\b', text)
     if not match:
         auth_state["phone_no_match_count"] += 1
         if auth_state["phone_no_match_count"] >= 3:
             return False
-    return match.group(0) if match else None
+    return re.sub(r'\D', '', match.group(0)) if match else None
 
 
 def extract_zip_code(text, auth_state):
-    if "zip_no_match_count" not in auth_state:
-        auth_state["zip_no_match_count"] = 0
+    auth_state.setdefault("zip_no_match_count", 0)
     match = re.search(r'\b\d[\d\s.-]{3}\d\b', text)
     if not match:
         auth_state["zip_no_match_count"] += 1
@@ -132,8 +126,8 @@ def handle_authentication_failure(session_id):
         "response":
         "Authentication failed. I will now respond as a guest user.",
         "authenticated": False,
-        "agent": "Authentication Agent",
-        "needs_auth": True,
+        "agent": "eBay Guest Agent",
+        "needs": "xfer",
     })
 
 
@@ -147,10 +141,8 @@ def ask_agent():
     query = data["query"]
     session_id = data["session_id"]
 
-    if session_id not in user_chat_history:
-        user_chat_history[session_id] = []
-
-    auth_state = user_auth_state.get(
+    user_chat_history.setdefault(session_id, [])
+    auth_state = user_auth_state.setdefault(
         session_id, {
             "authenticated": False,
             "phone": None,
@@ -159,7 +151,6 @@ def ask_agent():
             "started": False,
             "initial_query_context": None,
         })
-    user_auth_state[session_id] = auth_state
 
     if auth_state["authenticated"]:
         ebay_agent = create_ebay_auth_agent()
@@ -175,18 +166,70 @@ def ask_agent():
             "authenticated": auth_state["authenticated"],
             "agent": "eBay Agent",
         })
+
     try:
+        if not auth_state["authenticated"] and auth_state["started"]:
+            # authentication flow
+            if auth_state["awaiting"] == "phone":
+                phone = extract_phone_number(query, auth_state)
+                if phone:
+                    auth_state["phone"] = phone
+                    auth_state["awaiting"] = "zip"
+                    return jsonify({
+                        "response": "Please provide your zip code.",
+                        "authenticated": False,
+                        "agent": "Authentication Agent",
+                        "needs": "zip"
+                    })
+                else:
+                    return jsonify({
+                        "response": "Invalid phone number, please try again",
+                        "authenticated": False,
+                        "agent": "Authentication Agent",
+                        "needs": "phone"
+                    })
+            elif auth_state["awaiting"] == "zip":
+                zip_code = extract_zip_code(query, auth_state)
+                if zip_code:
+                    auth_state["zip"] = zip_code
+                    if f"{auth_state['phone']}-{auth_state['zip']}" in USER_DATA:
+                        auth_state["authenticated"] = True
+                        return jsonify({
+                            "response": "Authentication successful.",
+                            "authenticated": True,
+                            "agent": "eBay Agent"
+                        })
+                    else:
+                        return handle_authentication_failure(session_id)
+                else:
+                    return jsonify({
+                        "response": "Invalid zip code, please try again",
+                        "authenticated": False,
+                        "agent": "Authentication Agent",
+                        "needs": "zip"
+                    })
+        else:
+            if not auth_state["started"]:
+                auth_state["started"] = True
+                auth_state["initial_query_context"] = ' '.join(
+                    query.split()[:4]) + ('...'
+                                          if len(query.split()) > 4 else '')
+                return jsonify({
+                    "response":
+                    f"To assist you further, please provide your phone number.",
+                    "authenticated": False,
+                    "agent": "Authentication Agent",
+                    "needs": "phone"
+                })
+
         response = ebay_agent.run(input=query, chat_history=chat_history_str)
         user_chat_history[session_id].append(f"User: {query}")
         user_chat_history[session_id].append(f"Assistant: {response}")
         return jsonify({
             "response": response,
             "authenticated": auth_state["authenticated"],
-            "agent": "eBay Agent",
+            "agent": "eBay Agent"
         })
     except Exception as e:
         logging.error(f"Session {session_id}: Agent Error: {e}")
         return jsonify({"error": f"Agent Error: {str(e)}"}), 500
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
