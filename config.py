@@ -13,3 +13,6 @@ USER_DATA = {
         "authenticated": True
     }
 }
+
+export OPENAI_API_KEY=your-groq-api-key
+export OPENAI_API_BASE=https://api.groq.com/openai/v1

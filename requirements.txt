@@ -3,3 +3,5 @@ duckduckgo-search
 langchain
 langchain-community
 flask
+langchain-ollama
+langchain-groq
