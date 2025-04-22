@@ -5,6 +5,7 @@ from langchain_ollama import OllamaLLM
 import os
 import re
 import logging
+import ast
 
 from langchain_groq import ChatGroq
 
@@ -40,26 +41,11 @@ search_tool = DuckDuckGoSearchRun(
 )
 tools = [search_tool]
 
-ebay_guest_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features.
+ebay_guest_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Instead of respoding with * or **, use SSML tags like <emphasis> or <break> to make the response sound natural.
 
 Under NO CIRCUMSTANCES should you answer questions about topics outside of eBay. This includes, but is not limited to: general knowledge, current events, weather, personal opinions, or any other subject matter that is not directly and exclusively about eBay.
 
-If a user asks a non-eBay question, you MUST respond with a clear and concise refusal, such as: "I can only answer questions about eBay." or "Sorry, I can only help with eBay-related inquiries." Do not attempt to answer non-eBay questions, and do not provide any information outside of the eBay domain.
-
-Here are some examples:
-
-User: What is eBay's return policy?
-You: I should use the search tool to find eBay's return policy.
-
-User: How do I sell an item on eBay?
-You: I should use the search tool to find instructions on selling items on eBay.
-
-User: What is the weather in Vancouver, WA?
-You: I can only answer questions about eBay.
-
-User: What are the current stock prices?
-You: I can only answer questions about eBay.
-
+At any point of time if customer says "i am done" or "i am good" or "that is all" etc., please just say "Thank you for calling eBay. Have a great day!" and end the conversation. To end the conversation, set needs as "disconnect".
 
 Previous conversation:
 {chat_history}
@@ -68,7 +54,67 @@ At any point of time if customer say repeat, please just repeat the last respons
 
 Now, answer the following question: {input}"""
 
-ebay_auth_prompt_prefix = ebay_guest_prompt_prefix
+ebay_auth_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Use SSML tags like <emphasis> or <break> if needed.
+
+"""
+
+
+def clean_response(text):
+    # Remove Markdown-style bold/italic
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    # Remove numbered list prefixes (e.g., "1. ", "2. ")
+    #  text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
+    # Remove quotes
+    text = text.replace('"', '')
+    return text.strip()
+
+
+def format_list_with_dtmf(data_list):
+    """Formats a list with DTMF numbers (1-10)."""
+    formatted_list = []
+    for i, item in enumerate(data_list):
+        if 1 <= i + 1 <= 10:
+            formatted_list.append(f"{i + 1}. {item}")
+        else:
+            formatted_list.append(f"{i + 1}. {item} (Beyond DTMF range)")
+    return formatted_list
+
+
+def extract_list_from_llm_response(response):
+    """Attempts to extract a list of items from the LLM's response."""
+    lines = response.strip().split('\n')
+    list_started = False
+    list_items = []
+
+    for line in lines:
+        line = line.strip()
+        if not list_started and line.lower().startswith(
+                "here are some options:"):
+            list_started = True
+            continue
+        elif list_started:
+            numbered_match = re.match(r"^\d+\.\s+(.*)$", line)
+            if numbered_match:
+                list_items.append(numbered_match.group(1).strip())
+                continue  # Move to the next line after a successful match
+
+            nested_numbered_match = re.match(r"^\d+\.\s*\d+\.\s+(.*)$", line)
+            if nested_numbered_match:
+                list_items.append(nested_numbered_match.group(1).strip())
+                continue  # Move to the next line
+
+            if not re.match(r"^(please enter|enter the number)",
+                            line.lower()) and line.strip():
+                list_items.append(line)
+                continue  # Move to the next line
+
+        elif not list_started:
+            bullet_match = re.match(r"^[-*]\s+(.*)$", line)
+            if bullet_match:
+                list_items.append(bullet_match.group(1).strip())
+
+    return list_items
 
 
 def create_ebay_guest_agent():
@@ -77,7 +123,7 @@ def create_ebay_guest_agent():
         tools=tools,
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True,
-        prefix=ebay_guest_prompt_prefix,
+        agent_kwargs={"prefix": ebay_guest_prompt_prefix},
         handle_parsing_errors=
         "Check your output and ensure it conforms to the schema: ```json\n{\n    \"action\": \"tool_name\",\n    \"action_input\": \"tool_input\"\n}\n``` or respond directly to the user."
     )
@@ -90,7 +136,7 @@ def create_ebay_auth_agent():
         tools=tools,
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True,
-        prefix=ebay_auth_prompt_prefix,
+        agent_kwargs={"prefix": ebay_guest_prompt_prefix},
         handle_parsing_errors=
         "Check your output and ensure it conforms to the schema: ```json\n{\n    \"action\": \"tool_name\",\n    \"action_input\": \"tool_input\"\n}\n``` or respond directly to the user.",
         max_iterations=10)
@@ -100,6 +146,11 @@ def create_ebay_auth_agent():
 app = Flask(__name__)
 user_auth_state = {}  # In-memory state for tracking authentication attempts
 user_chat_history = {}  # In-memory state for storing chat history per session
+last_llm_list = {}  # Store the last LLM generated list per session
+awaiting_dtmf_selection = {}  # Track if the agent is awaiting DTMF input
+negative_response_patterns = re.compile(
+    r"(don'?t have|doesn'?t match|not it|wrong (number|zip)|can'?t provide|i'm unable to)",
+    re.IGNORECASE)
 
 
 def extract_phone_number(text, auth_state):
@@ -145,6 +196,18 @@ def handle_authentication_failure(session_id):
     })
 
 
+def process_dtmf_input(user_input, original_list):
+    """Processes user input to retrieve the corresponding item from the original list based on DTMF number."""
+    try:
+        selected_index = int(user_input) - 1
+        if 0 <= selected_index < len(original_list):
+            return original_list[selected_index]
+        else:
+            return None  # Invalid selection
+    except ValueError:
+        return None  # Invalid input
+
+
 @app.route("/ask", methods=["POST"])
 def ask_agent():
     print(
@@ -158,6 +221,8 @@ def ask_agent():
     query = data["query"]
     session_id = data["session_id"]
     user_chat_history.setdefault(session_id, [])
+    last_llm_list.setdefault(session_id, None)
+    awaiting_dtmf_selection.setdefault(session_id, False)
 
     auth_state = user_auth_state.get(
         session_id, {
@@ -169,40 +234,88 @@ def ask_agent():
             "initial_query_context": None
         })
     user_auth_state[session_id] = auth_state  # Ensure state is initialized
-    negative_response_patterns = re.compile(
-        r"(don'?t have|doesn'?t match|not it|wrong (number|zip)|can'?t provide|i'm unable to)",
-        re.IGNORECASE)
 
     logging.debug(
-        f"Session {session_id}: Received query: '{query}'. Current auth_state: {auth_state}"
+        f"Session {session_id}: Received query: '{query}'. Current auth_state: {auth_state}, Awaiting DTMF: {awaiting_dtmf_selection[session_id]}"
     )
     chat_history_str = "\n".join(user_chat_history[session_id])
-    if query.lower() in ("repeat", "5") and user_chat_history[session_id]:
+
+    # Handle DTMF input if awaiting selection
+    if awaiting_dtmf_selection[session_id] and query.isdigit(
+    ) and 1 <= int(query) <= 10 and last_llm_list[session_id]:
+        selected_item = process_dtmf_input(query, last_llm_list[session_id])
+        if selected_item:
+            awaiting_dtmf_selection[session_id] = False  # Reset flag
+            logging.debug(
+                f"Session {session_id}: User selected item: {selected_item}")
+            # The selected_item becomes the new query for the LLM
+            return ask_agent_internal(selected_item, session_id, auth_state,
+                                      chat_history_str)
+        else:
+            response = "Invalid selection. Please enter a number between 1 and 10."
+            user_chat_history[session_id].append(f"User: {query}")
+            user_chat_history[session_id].append(f"Assistant: {response}")
+            return jsonify({
+                "response": response,
+                "authenticated": auth_state["authenticated"],
+                "agent": "eBay Agent"
+            })
+    elif ("repeat" in query.lower()
+          or query.strip() == "5") and user_chat_history[session_id]:
         response = user_chat_history[session_id][-1].split("Assistant: ")[-1]
         return jsonify({
             "response": response,
             "authenticated": auth_state["authenticated"],
             "agent": "eBay Agent",
         })
+    else:
+        return ask_agent_internal(query, session_id, auth_state,
+                                  chat_history_str)
+
+
+def ask_agent_internal(query, session_id, auth_state, chat_history_str):
     if auth_state["authenticated"]:
         ebay_auth_agent = create_ebay_auth_agent()
-        chat_history_str = "\n".join(user_chat_history[session_id])
         logging.debug(
-            f"Session {session_id}: Authenticated query. Chat history: {chat_history_str}"
+            f"Session {session_id}: Authenticated query: '{query}'. Chat history: {chat_history_str}"
         )
-
         try:
             response = ebay_auth_agent.run(input=query,
                                            chat_history=chat_history_str)
-            user_chat_history[session_id].append(f"User: {query}")
-            user_chat_history[session_id].append(f"Assistant: {response}")
-            logging.debug(
-                f"Session {session_id}: Authenticated response: {response}")
-            return jsonify({
-                "response": response,
-                "authenticated": True,
-                "agent": "eBay Authenticated Agent"
-            })
+            response = clean_response(response)
+
+            extracted_list = extract_list_from_llm_response(response)
+            if extracted_list and len(extracted_list) > 0 and len(
+                    extracted_list) <= 100:
+                formatted_list = format_list_with_dtmf(extracted_list)
+                last_llm_list[session_id] = extracted_list
+                awaiting_dtmf_selection[session_id] = True  # Set flag
+                response_text = "Here are some options:\n" + "\n".join(
+                    formatted_list)
+
+                user_chat_history[session_id].append(f"User: {query}")
+                user_chat_history[session_id].append(
+                    f"Assistant: {response_text}")
+                return jsonify({
+                    "response": response_text,
+                    "authenticated": True,
+                    "agent": "eBay Authenticated Agent",
+                    "is_list": True,
+                    "needs_dtmf": True
+                })
+            else:
+                last_llm_list[
+                    session_id] = None  # Clear the list if not applicable
+                awaiting_dtmf_selection[session_id] = False
+                user_chat_history[session_id].append(f"User: {query}")
+                user_chat_history[session_id].append(f"Assistant: {response}")
+                return jsonify({
+                    "response": response,
+                    "authenticated": True,
+                    "agent": "eBay Authenticated Agent",
+                    "is_list": False,
+                    "needs_dtmf": False
+                })
         except Exception as e:
             logging.error(
                 f"Session {session_id}: eBay Authenticated Agent Error: {e}")
@@ -367,6 +480,7 @@ def ask_agent():
                     "agent": "eBay Guest Agent (Initial)",
                     "needs": "xfer"
                 })
+
             elif not auth_state["started"]:
                 # First interaction in a new session, not phone or zip
                 auth_state["started"] = True
@@ -390,6 +504,7 @@ def ask_agent():
                     "agent": "eBay Guest Agent (Initial)",
                     "needs": "phone"
                 })
+
             else:
                 # If 'started' is True but still not authenticated and not awaiting,
                 # and the input is not phone/zip, we should probably re-prompt for auth.

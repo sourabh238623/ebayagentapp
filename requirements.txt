@@ -5,3 +5,4 @@ langchain-community
 flask
 langchain-ollama
 langchain-groq
+langchain-core
