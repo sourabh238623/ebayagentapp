@@ -56,6 +56,18 @@ Now, answer the following question: {input}"""
 
 ebay_auth_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Use SSML tags like <emphasis> or <break> if needed.
 
+For each query, classify the intent into one of these categories:
+- returns (for return-related queries)
+- refunds (for refund-related queries)
+- item_not_received (for queries about missing or undelivered items)
+- account_issues (for account access, login, or security related queries)
+- others (for any other queries)
+
+Your response should be in this JSON format:
+{
+    "response": "your natural language response here",
+    "intent": "one of the intent categories"
+}
 """
 
 
@@ -280,11 +292,13 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
             f"Session {session_id}: Authenticated query: '{query}'. Chat history: {chat_history_str}"
         )
         try:
-            response = ebay_auth_agent.run(input=query,
+            llm_response = ebay_auth_agent.run(input=query,
                                            chat_history=chat_history_str)
-            response = clean_response(response)
-
-            extracted_list = extract_list_from_llm_response(response)
+            try:
+                parsed_response = json.loads(llm_response)
+                response = clean_response(parsed_response["response"])
+                intent = parsed_response["intent"]
+                extracted_list = extract_list_from_llm_response(response)
             if extracted_list and len(extracted_list) > 0 and len(
                     extracted_list) <= 100:
                 formatted_list = format_list_with_dtmf(extracted_list)
@@ -301,7 +315,8 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                     "authenticated": True,
                     "agent": "eBay Authenticated Agent",
                     "is_list": True,
-                    "needs_dtmf": True
+                    "needs_dtmf": True,
+                    "intent": intent
                 })
             else:
                 last_llm_list[
