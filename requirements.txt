@@ -6,3 +6,5 @@ flask
 langchain-ollama
 langchain-groq
 langchain-core
+pydantic
+pydantic

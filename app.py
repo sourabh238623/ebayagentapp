@@ -7,18 +7,11 @@ import re
 import logging
 import ast
 import json
+from pydantic import BaseModel, ValidationError
 
 from langchain_groq import ChatGroq
 
 logging.basicConfig(level=logging.DEBUG)
-"""
-# Ensure your Ollama base URL is accessible
-OLLAMA_BASE_URL = os.environ.get(
-    "OLLAMA_BASE_URL", "https://9759-216-113-160-105.ngrok-free.app")
-LLM_MODEL = os.environ.get("LLM_MODEL", "mistral")
-
-llm = OllamaLLM(base_url=OLLAMA_BASE_URL, model=LLM_MODEL)
-"""
 
 os.environ[
     "GROQ_API_KEY"] = "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"
@@ -67,7 +60,8 @@ For each query, classify the intent into one of these categories:
 Your response should be in this JSON format:
 {
     "response": "your natural language response here",
-    "intent": "one of the intent categories"
+    "intent": "one of the intent categories",
+    "suggested_options": []
 }
 
 Previous conversation:
@@ -157,7 +151,7 @@ def create_ebay_auth_agent():
         tools=tools,
         agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
         verbose=True,
-        agent_kwargs={"prefix": ebay_guest_prompt_prefix},
+        agent_kwargs={"prefix": ebay_auth_prompt_prefix},
         handle_parsing_errors=
         "Check your output and ensure it conforms to the schema: ```json\n{\n    \"action\": \"tool_name\",\n    \"action_input\": \"tool_input\"\n}\n``` or respond directly to the user.",
         max_iterations=10)
@@ -228,6 +222,17 @@ def process_dtmf_input(user_input, original_list):
     except ValueError:
         return None  # Invalid input
 
+class ResponseModel(BaseModel):
+    response: str
+    intent: str
+    suggested_options: list = []
+    needs_disconnect: bool = False
+
+def validate_response(llm_response):
+    try:
+        return ResponseModel.model_validate_json(llm_response)
+    except ValidationError as e:
+        raise Exception(f"Pydantic validation error: {e}") from e
 
 @app.route("/ask", methods=["POST"])
 def ask_agent():
@@ -304,12 +309,20 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
             llm_response = ebay_auth_agent.run(input=query,
                                                chat_history=chat_history_str)
             try:
-                parsed_response = json.loads(llm_response)
-                response = clean_response(parsed_response["response"])
-                intent = parsed_response["intent"]
-                extracted_list = extract_list_from_llm_response(response)
-            except json.JSONDecodeError as e:
-                logging.error(f"Failed to parse JSON response: {e}")
+                validated_response = validate_response(llm_response)
+                response = clean_response(validated_response.response)
+                intent = validated_response.intent
+                extracted_list = validated_response.suggested_options
+
+                if validated_response.needs_disconnect:
+                    return jsonify({
+                        "response": response,
+                        "authenticated": True,
+                        "agent": "eBay Authenticated Agent",
+                        "needs": "disconnect"
+                    })
+            except Exception as e:
+                logging.error(f"Failed to validate response: {e}")
                 return jsonify({"error": "Failed to process response"}), 500
 
             if extracted_list and len(extracted_list) > 0 and len(
@@ -342,7 +355,8 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                     "authenticated": True,
                     "agent": "eBay Authenticated Agent",
                     "is_list": False,
-                    "needs_dtmf": False
+                    "needs_dtmf": False,
+                    "intent": intent
                 })
         except Exception as e:
             logging.error(
