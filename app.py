@@ -69,6 +69,14 @@ Your response should be in this JSON format:
     "response": "your natural language response here",
     "intent": "one of the intent categories"
 }
+
+Previous conversation:
+{chat_history}
+
+At any point of time if customer say repeat, please just repeat the last response. If you get input as 5, it means you need to repeat the last response.
+
+Now, answer the following question: {input}
+
 """
 
 
@@ -294,7 +302,7 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
         )
         try:
             llm_response = ebay_auth_agent.run(input=query,
-                                           chat_history=chat_history_str)
+                                               chat_history=chat_history_str)
             try:
                 parsed_response = json.loads(llm_response)
                 response = clean_response(parsed_response["response"])
