@@ -299,7 +299,7 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                 response = clean_response(parsed_response["response"])
                 intent = parsed_response["intent"]
                 extracted_list = extract_list_from_llm_response(response)
-            if extracted_list and len(extracted_list) > 0 and len(
+                if extracted_list and len(extracted_list) > 0 and len(
                     extracted_list) <= 100:
                 formatted_list = format_list_with_dtmf(extracted_list)
                 last_llm_list[session_id] = extracted_list
