@@ -6,6 +6,7 @@ import os
 import re
 import logging
 import ast
+import json
 
 from langchain_groq import ChatGroq
 
@@ -299,7 +300,11 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                 response = clean_response(parsed_response["response"])
                 intent = parsed_response["intent"]
                 extracted_list = extract_list_from_llm_response(response)
-                if extracted_list and len(extracted_list) > 0 and len(
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse JSON response: {e}")
+                return jsonify({"error": "Failed to process response"}), 500
+
+            if extracted_list and len(extracted_list) > 0 and len(
                     extracted_list) <= 100:
                 formatted_list = format_list_with_dtmf(extracted_list)
                 last_llm_list[session_id] = extracted_list
