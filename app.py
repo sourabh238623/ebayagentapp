@@ -1,20 +1,17 @@
 from flask import Flask, request, jsonify
 from langchain.agents import initialize_agent, AgentType
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain_ollama import OllamaLLM
 import os
 import re
 import logging
-import ast
-import json
 from pydantic import BaseModel, ValidationError
-
 from langchain_groq import ChatGroq
+import json  # Import json module for parsing
 
 logging.basicConfig(level=logging.DEBUG)
 
 os.environ[
-    "GROQ_API_KEY"] = "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"
+    "GROQ_API_KEY"] = "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"
 model = ChatGroq(model="Gemma2-9b-It")
 
 USER_DATA = {
@@ -35,7 +32,8 @@ search_tool = DuckDuckGoSearchRun(
 )
 tools = [search_tool]
 
-ebay_guest_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Instead of respoding with * or **, use SSML tags like <emphasis> or <break> to make the response sound natural.
+# MODIFIED: ebay_guest_prompt_prefix - Added instructions for SSML tags
+ebay_guest_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Instead of responding with * or **, use SSML tags like <emphasis> or <break> to make the response sound natural.
 
 Under NO CIRCUMSTANCES should you answer questions about topics outside of eBay. This includes, but is not limited to: general knowledge, current events, weather, personal opinions, or any other subject matter that is not directly and exclusively about eBay.
 
@@ -48,6 +46,7 @@ At any point of time if customer say repeat, please just repeat the last respons
 
 Now, answer the following question: {input}"""
 
+# MODIFIED: ebay_auth_prompt_prefix - Clearly instruct JSON output
 ebay_auth_prompt_prefix = """You are an expert eBay assistant. Your ONLY function is to answer questions directly related to the eBay platform, its policies, products listed on eBay, and how to use eBay features. The answer will be spoken aloud to the user. Do not include any formatting like asterisks, hashtags, dashes, or quote marks. The response should sound natural when read aloud, like a human speaking. Use plain language only. Use SSML tags like <emphasis> or <break> if needed.
 
 For each query, classify the intent into one of these categories:
@@ -57,12 +56,10 @@ For each query, classify the intent into one of these categories:
 - account_issues (for account access, login, or security related queries)
 - others (for any other queries)
 
-Your response should be in this JSON format:
-{
-    "response": "your natural language response here",
-    "intent": "one of the intent categories",
-    "suggested_options": []
-}
+Your response MUST be a JSON object with the following keys:
+"response": "your natural language response here",
+"intent": "one of the intent categories",
+"needs_disconnect": true/false
 
 Previous conversation:
 {chat_history}
@@ -70,7 +67,6 @@ Previous conversation:
 At any point of time if customer say repeat, please just repeat the last response. If you get input as 5, it means you need to repeat the last response.
 
 Now, answer the following question: {input}
-
 """
 
 
@@ -78,58 +74,9 @@ def clean_response(text):
     # Remove Markdown-style bold/italic
     text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
     text = re.sub(r'\*(.*?)\*', r'\1', text)
-    # Remove numbered list prefixes (e.g., "1. ", "2. ")
-    #  text = re.sub(r'^\d+\.\s*', '', text, flags=re.MULTILINE)
     # Remove quotes
     text = text.replace('"', '')
     return text.strip()
-
-
-def format_list_with_dtmf(data_list):
-    """Formats a list with DTMF numbers (1-10)."""
-    formatted_list = []
-    for i, item in enumerate(data_list):
-        if 1 <= i + 1 <= 10:
-            formatted_list.append(f"{i + 1}. {item}")
-        else:
-            formatted_list.append(f"{i + 1}. {item} (Beyond DTMF range)")
-    return formatted_list
-
-
-def extract_list_from_llm_response(response):
-    """Attempts to extract a list of items from the LLM's response."""
-    lines = response.strip().split('\n')
-    list_started = False
-    list_items = []
-
-    for line in lines:
-        line = line.strip()
-        if not list_started and line.lower().startswith(
-                "here are some options:"):
-            list_started = True
-            continue
-        elif list_started:
-            numbered_match = re.match(r"^\d+\.\s+(.*)$", line)
-            if numbered_match:
-                list_items.append(numbered_match.group(1).strip())
-                continue  # Move to the next line after a successful match
-
-            nested_numbered_match = re.match(r"^\d+\.\s*\d+\.\s+(.*)$", line)
-            if nested_numbered_match:
-                list_items.append(nested_numbered_match.group(1).strip())
-                continue  # Move to the next line
-
-            if not re.match(r"^(please enter|enter the number)",
-                            line.lower()) and line.strip():
-                list_items.append(line)
-                continue  # Move to the next line
-
-        elif not list_started:
-            bullet_match = re.match(r"^[-*]\s+(.*)$", line)
-            if bullet_match:
-                list_items.append(bullet_match.group(1).strip())
-
-    return list_items
 
 
 def create_ebay_guest_agent():
@@ -161,8 +108,6 @@ def create_ebay_auth_agent():
 app = Flask(__name__)
 user_auth_state = {}  # In-memory state for tracking authentication attempts
 user_chat_history = {}  # In-memory state for storing chat history per session
-last_llm_list = {}  # Store the last LLM generated list per session
-awaiting_dtmf_selection = {}  # Track if the agent is awaiting DTMF input
 negative_response_patterns = re.compile(
     r"(don'?t have|doesn'?t match|not it|wrong (number|zip)|can'?t provide|i'm unable to)",
     re.IGNORECASE)
@@ -211,28 +156,42 @@ def handle_authentication_failure(session_id):
     })
 
 
-def process_dtmf_input(user_input, original_list):
-    """Processes user input to retrieve the corresponding item from the original list based on DTMF number."""
-    try:
-        selected_index = int(user_input) - 1
-        if 0 <= selected_index < len(original_list):
-            return original_list[selected_index]
-        else:
-            return None  # Invalid selection
-    except ValueError:
-        return None  # Invalid input
-
 class ResponseModel(BaseModel):
     response: str
     intent: str
-    suggested_options: list = []
     needs_disconnect: bool = False
+
 
 def validate_response(llm_response):
     try:
-        return ResponseModel.model_validate_json(llm_response)
+        # Use rstrip('`') to remove trailing backticks, which can sometimes appear with JSON in LLM responses
+        # Also, remove any leading/trailing whitespace and the 'json' prefix if present
+        clean_llm_response = llm_response.strip().lstrip('json').strip(
+            '`').strip()
+        return ResponseModel.model_validate_json(clean_llm_response)
     except ValidationError as e:
-        raise Exception(f"Pydantic validation error: {e}") from e
+        logging.error(
+            f"Pydantic validation error: {e}. Original response: {llm_response}"
+        )
+        # Attempt to parse as a plain string if JSON validation fails
+        # This part should ideally not be hit if the LLM is correctly prompted for JSON,
+        # but serves as a robust fallback.
+        try:
+            # Try to extract a JSON string even if there's some garbage around it
+            json_match = re.search(r'{.*}', llm_response, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                return ResponseModel.model_validate_json(json_str)
+        except Exception as json_extract_e:
+            logging.error(
+                f"Failed to extract and parse JSON from string: {json_extract_e}"
+            )
+
+        # If it's not a JSON-like string, treat the whole response as the 'response' field
+        return ResponseModel(response=clean_response(llm_response),
+                             intent="others",
+                             needs_disconnect=False)
+
 
 @app.route("/ask", methods=["POST"])
 def ask_agent():
@@ -247,8 +206,6 @@ def ask_agent():
     query = data["query"]
     session_id = data["session_id"]
     user_chat_history.setdefault(session_id, [])
-    last_llm_list.setdefault(session_id, None)
-    awaiting_dtmf_selection.setdefault(session_id, False)
 
     auth_state = user_auth_state.get(
         session_id, {
@@ -262,32 +219,13 @@ def ask_agent():
     user_auth_state[session_id] = auth_state  # Ensure state is initialized
 
     logging.debug(
-        f"Session {session_id}: Received query: '{query}'. Current auth_state: {auth_state}, Awaiting DTMF: {awaiting_dtmf_selection[session_id]}"
+        f"Session {session_id}: Received query: '{query}'. Current auth_state: {auth_state}"
     )
     chat_history_str = "\n".join(user_chat_history[session_id])
 
-    # Handle DTMF input if awaiting selection
-    if awaiting_dtmf_selection[session_id] and query.isdigit(
-    ) and 1 <= int(query) <= 10 and last_llm_list[session_id]:
-        selected_item = process_dtmf_input(query, last_llm_list[session_id])
-        if selected_item:
-            awaiting_dtmf_selection[session_id] = False  # Reset flag
-            logging.debug(
-                f"Session {session_id}: User selected item: {selected_item}")
-            # The selected_item becomes the new query for the LLM
-            return ask_agent_internal(selected_item, session_id, auth_state,
-                                      chat_history_str)
-        else:
-            response = "Invalid selection. Please enter a number between 1 and 10."
-            user_chat_history[session_id].append(f"User: {query}")
-            user_chat_history[session_id].append(f"Assistant: {response}")
-            return jsonify({
-                "response": response,
-                "authenticated": auth_state["authenticated"],
-                "agent": "eBay Agent"
-            })
-    elif ("repeat" in query.lower()
-          or query.strip() == "5") and user_chat_history[session_id]:
+    # Handle repeat logic
+    if ("repeat" in query.lower()
+            or query.strip() == "5") and user_chat_history[session_id]:
         response = user_chat_history[session_id][-1].split("Assistant: ")[-1]
         return jsonify({
             "response": response,
@@ -306,48 +244,42 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
             f"Session {session_id}: Authenticated query: '{query}'. Chat history: {chat_history_str}"
         )
         try:
-            llm_response = ebay_auth_agent.run(input=query,
-                                               chat_history=chat_history_str)
+            # The agent's run method expects a single string input usually.
+            # The JSON formatting is for the LLM's output within that run.
+            llm_raw_response = ebay_auth_agent.run(
+                input=query, chat_history=chat_history_str)
+            response = ""
+            intent = "others"
+            needs_disconnect = False
+
             try:
-                validated_response = validate_response(llm_response)
+                # Attempt to parse the LLM's raw response as JSON
+                validated_response = validate_response(llm_raw_response)
                 response = clean_response(validated_response.response)
                 intent = validated_response.intent
-                extracted_list = validated_response.suggested_options
-
-                if validated_response.needs_disconnect:
-                    return jsonify({
-                        "response": response,
-                        "authenticated": True,
-                        "agent": "eBay Authenticated Agent",
-                        "needs": "disconnect"
-                    })
+                needs_disconnect = validated_response.needs_disconnect
             except Exception as e:
-                logging.error(f"Failed to validate response: {e}")
-                return jsonify({"error": "Failed to process response"}), 500
+                logging.error(
+                    f"Session {session_id}: Failed to validate or parse LLM response as JSON: {e}. Raw LLM response: {llm_raw_response}"
+                )
+                # Fallback if validation fails, treat the whole LLM response as the message
+                response = clean_response(llm_raw_response)
+                intent = "others"  # Default intent if validation fails
 
-            if extracted_list and len(extracted_list) > 0 and len(
-                    extracted_list) <= 100:
-                formatted_list = format_list_with_dtmf(extracted_list)
-                last_llm_list[session_id] = extracted_list
-                awaiting_dtmf_selection[session_id] = True  # Set flag
-                response_text = "Here are some options:\n" + "\n".join(
-                    formatted_list)
+            if "i am done" in query.lower() or "i am good" in query.lower(
+            ) or "that is all" in query.lower():
+                response = "Thank you for calling eBay. Have a great day!"
+                needs_disconnect = True
 
-                user_chat_history[session_id].append(f"User: {query}")
-                user_chat_history[session_id].append(
-                    f"Assistant: {response_text}")
+            if needs_disconnect:
                 return jsonify({
-                    "response": response_text,
+                    "response": response,
                     "authenticated": True,
                     "agent": "eBay Authenticated Agent",
-                    "is_list": True,
-                    "needs_dtmf": True,
+                    "needs": "disconnect",
                     "intent": intent
                 })
             else:
-                last_llm_list[
-                    session_id] = None  # Clear the list if not applicable
-                awaiting_dtmf_selection[session_id] = False
                 user_chat_history[session_id].append(f"User: {query}")
                 user_chat_history[session_id].append(f"Assistant: {response}")
                 return jsonify({
@@ -358,6 +290,7 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                     "needs_dtmf": False,
                     "intent": intent
                 })
+
         except Exception as e:
             logging.error(
                 f"Session {session_id}: eBay Authenticated Agent Error: {e}")
@@ -423,7 +356,9 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                     })
                 else:
                     return handle_authentication_failure(session_id)
-            elif auth_state.get("zip_no_match_count") >= 2:
+            elif auth_state.get(
+                    "zip_no_match_count") is not None and auth_state.get(
+                        "zip_no_match_count") >= 2:
                 # If the zip code is not valid and we have already failed twice
                 logging.debug(
                     f"Session {session_id}: Zip code not valid after multiple attempts."
@@ -444,11 +379,9 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                 })
         else:
             # Start of a new session (or if not already awaiting info)
-            failed_attempts = 0
             phone = extract_phone_number(query, auth_state)
-            zip_code = False
-            #if phone:
-            #zip_code = extract_zip_code(query, auth_state)
+            zip_code = extract_zip_code(
+                query, auth_state)  # Call extract_zip_code here
 
             if phone and zip_code:
                 auth_state["started"] = True
@@ -509,7 +442,7 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                     "needs": "xfer"
                 })
             elif auth_state.get(
-                    "zip_no_match_count") != None and auth_state.get(
+                    "zip_no_match_count") is not None and auth_state.get(
                         "zip_no_match_count") >= 3:
                 # If the zip code is not valid and we have already failed twice
                 logging.debug(
