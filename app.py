@@ -56,10 +56,10 @@ For each query, classify the intent into one of these categories:
 - account_issues (for account access, login, or security related queries)
 - others (for any other queries)
 
-Your response MUST be a JSON object with the following keys:
-"response": "your natural language response here",
-"intent": "one of the intent categories",
-"needs_disconnect": true/false
+You MUST respond with ONLY a valid JSON object in this exact format:
+{{"response": "your natural language response here", "intent": "one of the intent categories", "needs_disconnect": false}}
+
+Do not include any text before or after the JSON object. Do not use markdown formatting or backticks.
 
 Previous conversation:
 {chat_history}
@@ -164,33 +164,34 @@ class ResponseModel(BaseModel):
 
 def validate_response(llm_response):
     try:
-        # Use rstrip('`') to remove trailing backticks, which can sometimes appear with JSON in LLM responses
-        # Also, remove any leading/trailing whitespace and the 'json' prefix if present
-        clean_llm_response = llm_response.strip().lstrip('json').strip(
-            '`').strip()
-        return ResponseModel.model_validate_json(clean_llm_response)
-    except ValidationError as e:
-        logging.error(
-            f"Pydantic validation error: {e}. Original response: {llm_response}"
+        # Clean the response more thoroughly
+        clean_llm_response = llm_response.strip()
+        
+        # Remove common prefixes that might appear
+        if clean_llm_response.startswith('json'):
+            clean_llm_response = clean_llm_response[4:].strip()
+        
+        # Remove backticks
+        clean_llm_response = clean_llm_response.strip('`').strip()
+        
+        # Try to extract JSON if it's embedded in text
+        json_match = re.search(r'\{[^{}]*"response"[^{}]*\}', clean_llm_response, re.DOTALL)
+        if json_match:
+            clean_llm_response = json_match.group(0)
+        
+        # Parse as JSON
+        parsed_json = json.loads(clean_llm_response)
+        return ResponseModel.model_validate(parsed_json)
+        
+    except (ValidationError, json.JSONDecodeError) as e:
+        logging.error(f"JSON validation error: {e}. Original response: {llm_response}")
+        
+        # Fallback: create a valid response object
+        return ResponseModel(
+            response=clean_response(llm_response),
+            intent="others",
+            needs_disconnect=False
         )
-        # Attempt to parse as a plain string if JSON validation fails
-        # This part should ideally not be hit if the LLM is correctly prompted for JSON,
-        # but serves as a robust fallback.
-        try:
-            # Try to extract a JSON string even if there's some garbage around it
-            json_match = re.search(r'{.*}', llm_response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                return ResponseModel.model_validate_json(json_str)
-        except Exception as json_extract_e:
-            logging.error(
-                f"Failed to extract and parse JSON from string: {json_extract_e}"
-            )
-
-        # If it's not a JSON-like string, treat the whole response as the 'response' field
-        return ResponseModel(response=clean_response(llm_response),
-                             intent="others",
-                             needs_disconnect=False)
 
 
 @app.route("/ask", methods=["POST"])
@@ -292,10 +293,21 @@ def ask_agent_internal(query, session_id, auth_state, chat_history_str):
                 })
 
         except Exception as e:
-            logging.error(
-                f"Session {session_id}: eBay Authenticated Agent Error: {e}")
-            return jsonify(
-                {"error": f"eBay Authenticated Agent Error: {str(e)}"}), 500
+            logging.error(f"Session {session_id}: eBay Authenticated Agent Error: {e}")
+            
+            # If it's a rate limit or search error, provide a fallback response
+            if "Ratelimit" in str(e) or "duckduckgo" in str(e).lower():
+                fallback_response = "I'm experiencing some technical difficulties with my search function right now. However, I can still help you with general eBay questions. Could you please rephrase your question or ask about something specific?"
+                user_chat_history[session_id].append(f"User: {query}")
+                user_chat_history[session_id].append(f"Assistant: {fallback_response}")
+                return jsonify({
+                    "response": fallback_response,
+                    "authenticated": True,
+                    "agent": "eBay Authenticated Agent",
+                    "intent": "others"
+                })
+            
+            return jsonify({"error": f"eBay Authenticated Agent Error: {str(e)}"}), 500
     else:
         # Authentication flow for non-authenticated sessions
         if auth_state["awaiting"] == "phone":
